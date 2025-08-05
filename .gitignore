@@ -80,3 +80,5 @@ Thumbs.db
 
 # Package files
 requirements.txt
+.custom_components
+.character_composer
