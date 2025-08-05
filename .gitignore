@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# PyQt
+*.qmlc
+*.qrc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Game Data (exclude original game assets)
+bgimage/
+bgimage2/
+cr_data/
+cr_event/
+data/
+fgimage/
+GINKA/
+cr_data_png/
+
+# Analysis Data
+character_analysis.json
+*.json
+
+# Test Files
+test_*.py
+test_*.json
+
+# Live2D Projects
+live2d_projects/
+
+# Tools
+tools/
+
+# Legacy Code
+legacy/
+
+# History
+.history/
+
+# Documentation (keep only main README)
+docs/
+
+# Temporary Files
+*.tmp
+*.temp
+*.log
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Package files
+requirements.txt
