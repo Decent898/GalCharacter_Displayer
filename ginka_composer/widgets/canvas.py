@@ -128,19 +128,64 @@ class Canvas(QWidget):
         painter.translate(instance.x_offset, instance.y_offset)
         painter.scale(instance.scale, instance.scale)
         
-        # 按顺序绘制图层
-        for layer_id in instance.layer_order:
-            if layer_id in instance.composition_layers and layer_id in instance.layer_images:
-                layer = instance.composition_layers[layer_id]
-                image = instance.layer_images[layer_id]
-                
-                # 转换PIL图像为QPixmap
+        # 获取所有要绘制的元素（包括图层和自定义部件）
+        all_elements = self.getAllDrawElements(instance)
+        
+        # 按z_order排序绘制所有元素
+        for element in all_elements:
+            if element['type'] == 'layer':
+                # 绘制普通图层
+                layer = element['layer']
+                image = element['image']
                 pixmap = self.pilToQPixmap(image)
                 if pixmap:
                     x, y = layer['position']
                     painter.drawPixmap(x, y, pixmap)
+                    
+            elif element['type'] == 'custom_component':
+                # 绘制自定义部件
+                component = element['component']
+                if component.visible and component.image:
+                    painter.save()
+                    painter.translate(component.x, component.y)
+                    painter.scale(component.scale, component.scale)
+                    pixmap = self.pilToQPixmap(component.image)
+                    if pixmap:
+                        painter.drawPixmap(0, 0, pixmap)
+                    painter.restore()
         
         painter.restore()
+    
+    def getAllDrawElements(self, instance):
+        """获取角色实例的所有绘制元素（图层+自定义部件），按z_order排序"""
+        elements = []
+        
+        # 添加普通图层
+        for layer_id in instance.layer_order:
+            if layer_id in instance.composition_layers and layer_id in instance.layer_images:
+                layer = instance.composition_layers[layer_id]
+                image = instance.layer_images[layer_id]
+                elements.append({
+                    'type': 'layer',
+                    'z_order': layer.get('z_order', layer_id),  # 使用图层的z_order或layer_id
+                    'layer': layer,
+                    'image': image,
+                    'id': layer_id
+                })
+        
+        # 添加自定义部件
+        if hasattr(instance, 'custom_components'):
+            for component in instance.custom_components.components:
+                elements.append({
+                    'type': 'custom_component',
+                    'z_order': component.z_index,
+                    'component': component,
+                    'id': f"custom_{component.name}"
+                })
+        
+        # 按z_order排序
+        elements.sort(key=lambda x: x['z_order'])
+        return elements
     
     def pilToQPixmap(self, pil_image):
         """将PIL图像转换为QPixmap"""
@@ -245,8 +290,8 @@ class Canvas(QWidget):
         return bounds[0] <= pos.x() <= bounds[2] and bounds[1] <= pos.y() <= bounds[3]
     
     def calculateInstanceBounds(self, instance) -> tuple:
-        """计算角色实例的边界"""
-        if not instance.composition_layers:
+        """计算角色实例的边界（包括自定义部件）"""
+        if not instance.composition_layers and not (hasattr(instance, 'custom_components') and instance.custom_components.components):
             return (0, 0, 0, 0)
         
         min_x = float('inf')
@@ -258,6 +303,7 @@ class Canvas(QWidget):
         center_offset_x = 0  # 背景图片已经在绘制时居中
         center_offset_y = 0
         
+        # 计算普通图层边界
         for layer_id, layer in instance.composition_layers.items():
             x, y = layer['position']
             width, height = layer['size']
@@ -271,5 +317,26 @@ class Canvas(QWidget):
             min_y = min(min_y, final_y)
             max_x = max(max_x, final_x + scaled_width)
             max_y = max(max_y, final_y + scaled_height)
+        
+        # 计算自定义部件边界
+        if hasattr(instance, 'custom_components') and instance.custom_components.components:
+            for component in instance.custom_components.components:
+                comp_x, comp_y = component.x, component.y
+                comp_width, comp_height = component.image.size
+                
+                # 应用角色变换和部件自身缩放
+                final_x = comp_x * instance.scale + instance.x_offset
+                final_y = comp_y * instance.scale + instance.y_offset
+                scaled_width = comp_width * component.scale * instance.scale
+                scaled_height = comp_height * component.scale * instance.scale
+                
+                min_x = min(min_x, final_x)
+                min_y = min(min_y, final_y)
+                max_x = max(max_x, final_x + scaled_width)
+                max_y = max(max_y, final_y + scaled_height)
+        
+        # 如果没有任何元素，返回默认边界
+        if min_x == float('inf'):
+            return (0, 0, 0, 0)
         
         return (min_x, min_y, max_x, max_y)

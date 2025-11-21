@@ -15,10 +15,11 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, 
     QTabWidget, QProgressBar, QMessageBox, QFileDialog, 
     QListWidget, QListWidgetItem, QApplication, QLabel,
-    QStatusBar, QFrame, QGroupBox, QPushButton, QButtonGroup, QRadioButton, QCheckBox
+    QStatusBar, QFrame, QGroupBox, QPushButton, QButtonGroup, QRadioButton, QCheckBox,
+    QMenuBar, QTextEdit, QDialog, QScrollArea
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QPainter, QPixmap
+from PyQt6.QtGui import QFont, QPainter, QPixmap, QColor, QAction
 
 from ..models import CharacterInstance, ImageLoader
 from ..widgets import LayerPreviewWindow, PreviewableCheckBox, PreviewableBackgroundItem
@@ -57,9 +58,12 @@ class ModernCharacterComposer(QMainWindow):
         self.loadBackgroundList()
         self.setStyleSheet(get_modern_style())
         
+        # 启动时自动显示关于和帮助信息
+        QTimer.singleShot(500, self.showWelcomeDialogs)
+        
     def setupUI(self):
         """设置用户界面"""
-        self.setWindowTitle("GINKA 立绘搭配软件 - 现代版")
+        self.setWindowTitle("GINKA 立绘搭配 By DecEric")
         self.setGeometry(100, 100, 1600, 1000)
         
         # 创建中心部件
@@ -81,6 +85,9 @@ class ModernCharacterComposer(QMainWindow):
         
         # 设置分割器比例 - 左侧控制面板更窄，右侧画布更大
         splitter.setSizes([350, 1250])
+        
+        # 创建菜单栏
+        self.setupMenuBar()
         
         # 创建状态栏
         self.setupStatusBar()
@@ -184,6 +191,27 @@ class ModernCharacterComposer(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪")
     
+    def setupMenuBar(self):
+        """设置菜单栏"""
+        menubar = self.menuBar()
+        
+        # 帮助菜单
+        help_menu = menubar.addMenu('帮助(&H)')
+        
+        # 使用指南动作
+        help_action = QAction('使用指南(&G)', self)
+        help_action.setShortcut('F1')
+        help_action.triggered.connect(self.showHelp)
+        help_menu.addAction(help_action)
+        
+        # 分隔符
+        help_menu.addSeparator()
+        
+        # 关于动作
+        about_action = QAction('关于软件(&A)', self)
+        about_action.triggered.connect(self.showAbout)
+        help_menu.addAction(about_action)
+    
     def setupConnections(self):
         """设置信号连接"""
         # 画布工具栏连接
@@ -201,6 +229,7 @@ class ModernCharacterComposer(QMainWindow):
         # self.scene_tab.resetViewRequested.connect(self.resetView)
         self.scene_tab.exportImageRequested.connect(self.exportImage)
         self.scene_tab.exportImageHDRequested.connect(self.exportImageHD)
+        self.scene_tab.exportCharacterOnlyRequested.connect(self.exportCharacterOnly)
         self.scene_tab.saveSceneRequested.connect(self.saveScene)
         self.scene_tab.loadSceneRequested.connect(self.loadScene)
         
@@ -218,6 +247,13 @@ class ModernCharacterComposer(QMainWindow):
         self.character_tab.moveCharacterToBackRequested.connect(self.moveCharacterToBack)
         # 注释掉不存在的信号连接
         # self.character_tab.importCustomLayerRequested.connect(self.onImportCustomLayerRequested)
+        
+        # 自定义部件信号连接
+        self.character_tab.addCustomComponentRequested.connect(self.onAddCustomComponent)
+        self.character_tab.removeCustomComponentRequested.connect(self.onRemoveCustomComponent)
+        self.character_tab.customComponentSelected.connect(self.onCustomComponentSelected)
+        self.character_tab.customComponentTransformChanged.connect(self.onCustomComponentTransformChanged)
+        self.character_tab.moveCustomComponentRequested.connect(self.onMoveCustomComponent)
         
         # 图层标签页连接
         self.layer_tab.layerToggled.connect(self.toggleLayer)
@@ -395,9 +431,14 @@ class ModernCharacterComposer(QMainWindow):
                     self.updateTransformControls()
                     self.updateLayerUI()
                     self.updateLayerOrderDisplay()
+                    self.updateCustomComponentsList()  # 更新自定义部件列表
+                    # 更新角色标签页的自定义部件状态
+                    self.character_tab.setCurrentCharacterInstance(self.current_instance)
         else:
             self.current_instance = None
             self.updateLayerUI()
+            # 更新角色标签页的自定义部件状态
+            self.character_tab.setCurrentCharacterInstance(None)
     
     def updateTransformControls(self):
         """更新变换控件"""
@@ -511,8 +552,16 @@ class ModernCharacterComposer(QMainWindow):
                 self.layer_tab.layer_scroll_layout.addWidget(layer_frame)
         
         # 添加自定义图层分组
-        custom_layers = [layer for layer_id, layer in self.current_instance.composition_layers.items() 
-                        if layer_id < 0 and layer.get('custom', False)]
+        custom_layers = []
+        for layer_id, layer in self.current_instance.composition_layers.items():
+            # 处理可能的字符串键
+            try:
+                id_as_int = int(layer_id) if isinstance(layer_id, str) else layer_id
+                if id_as_int < 0 and layer.get('custom', False):
+                    custom_layers.append(layer)
+            except (ValueError, TypeError):
+                # 如果转换失败，跳过这个图层
+                continue
         
         if custom_layers:
             # 自定义图层分组标题
@@ -630,7 +679,15 @@ class ModernCharacterComposer(QMainWindow):
             # 直接使用基本的图层信息
             
             # 生成唯一的图层ID（使用负数避免与原始图层冲突）
-            custom_layer_id = -(len([lid for lid in self.current_instance.composition_layers.keys() if lid < 0]) + 1)
+            negative_ids = []
+            for lid in self.current_instance.composition_layers.keys():
+                try:
+                    id_as_int = int(lid) if isinstance(lid, str) else lid
+                    if id_as_int < 0:
+                        negative_ids.append(id_as_int)
+                except (ValueError, TypeError):
+                    continue
+            custom_layer_id = -(len(negative_ids) + 1)
             
             # 加载图像并转换为PNG格式
             if PIL_AVAILABLE:
@@ -806,80 +863,179 @@ class ModernCharacterComposer(QMainWindow):
                 self.progress_bar.setVisible(False)
     
     def updateLayerOrderDisplay(self):
-        """更新图层顺序显示"""
+        """更新图层顺序显示（包括自定义部件）"""
         self.layer_tab.layer_order_list.clear()
         
         if not self.current_instance:
             return
         
-        for i, layer_id in enumerate(self.current_instance.layer_order):
+        # 获取所有绘制元素（图层+自定义部件）
+        all_elements = self.getAllDrawElementsForDisplay()
+        
+        for i, element in enumerate(all_elements):
+            if element['type'] == 'layer':
+                layer = element['layer']
+                display_text = f"{i+1}. [图层] {layer['name']} (z:{element['z_order']})"
+                item = QListWidgetItem(display_text)
+                item.setData(Qt.ItemDataRole.UserRole, {'type': 'layer', 'id': element['id']})
+                
+            elif element['type'] == 'custom_component':
+                component = element['component']
+                display_text = f"{i+1}. [自定义] {component.name} (z:{element['z_order']})"
+                item = QListWidgetItem(display_text)
+                item.setData(Qt.ItemDataRole.UserRole, {'type': 'custom_component', 'name': component.name})
+                # 用不同的颜色标识自定义部件
+                item.setBackground(QColor(240, 248, 255))  # 淡蓝色背景
+                
+            self.layer_tab.layer_order_list.addItem(item)
+    
+    def getAllDrawElementsForDisplay(self):
+        """获取当前角色实例的所有绘制元素，用于显示"""
+        if not self.current_instance:
+            return []
+        
+        elements = []
+        
+        # 添加普通图层
+        for layer_id in self.current_instance.layer_order:
             if layer_id in self.current_instance.composition_layers:
                 layer = self.current_instance.composition_layers[layer_id]
-                display_text = f"{i+1}. {layer['name']} (ID:{layer_id})"
-                item = QListWidgetItem(display_text)
-                item.setData(Qt.ItemDataRole.UserRole, layer_id)
-                self.layer_tab.layer_order_list.addItem(item)
+                elements.append({
+                    'type': 'layer',
+                    'z_order': layer.get('z_order', layer_id),
+                    'layer': layer,
+                    'id': layer_id
+                })
+        
+        # 添加自定义部件
+        if hasattr(self.current_instance, 'custom_components'):
+            for component in self.current_instance.custom_components.components:
+                elements.append({
+                    'type': 'custom_component',
+                    'z_order': component.z_index,
+                    'component': component,
+                    'name': component.name
+                })
+        
+        # 按z_order排序
+        elements.sort(key=lambda x: x['z_order'])
+        return elements
     
     # 图层顺序控制方法
     def moveLayerUp(self):
-        """向上移动图层"""
+        """向上移动图层/自定义部件"""
         if not self.current_instance:
             return
         
         current_row = self.layer_tab.layer_order_list.currentRow()
-        if current_row >= 0 and current_row < len(self.current_instance.layer_order) - 1:
-            layer_order = self.current_instance.layer_order
-            layer_order[current_row], layer_order[current_row + 1] = \
-                layer_order[current_row + 1], layer_order[current_row]
-            
-            self.updateLayerOrderDisplay()
-            self.layer_tab.layer_order_list.setCurrentRow(current_row + 1)
-            self.canvas.updateCharacterInstance(self.current_instance.instance_id)
+        if current_row < 0:
+            return
+        
+        all_elements = self.getAllDrawElementsForDisplay()
+        if current_row >= len(all_elements) - 1:
+            return  # 已经在最顶层
+        
+        # 获取当前和下一个元素
+        current_element = all_elements[current_row]
+        next_element = all_elements[current_row + 1]
+        
+        # 交换z_order
+        current_z = current_element['z_order']
+        next_z = next_element['z_order']
+        
+        self.setElementZOrder(current_element, next_z)
+        self.setElementZOrder(next_element, current_z)
+        
+        self.updateLayerOrderDisplay()
+        self.layer_tab.layer_order_list.setCurrentRow(current_row + 1)
+        self.canvas.updateCharacterInstance(self.current_instance.instance_id)
     
     def moveLayerDown(self):
-        """向下移动图层"""
+        """向下移动图层/自定义部件"""
         if not self.current_instance:
             return
         
         current_row = self.layer_tab.layer_order_list.currentRow()
-        if current_row > 0:
-            layer_order = self.current_instance.layer_order
-            layer_order[current_row], layer_order[current_row - 1] = \
-                layer_order[current_row - 1], layer_order[current_row]
-            
-            self.updateLayerOrderDisplay()
-            self.layer_tab.layer_order_list.setCurrentRow(current_row - 1)
-            self.canvas.updateCharacterInstance(self.current_instance.instance_id)
+        if current_row <= 0:
+            return  # 已经在最底层
+        
+        all_elements = self.getAllDrawElementsForDisplay()
+        if current_row >= len(all_elements):
+            return
+        
+        # 获取当前和前一个元素
+        current_element = all_elements[current_row]
+        prev_element = all_elements[current_row - 1]
+        
+        # 交换z_order
+        current_z = current_element['z_order']
+        prev_z = prev_element['z_order']
+        
+        self.setElementZOrder(current_element, prev_z)
+        self.setElementZOrder(prev_element, current_z)
+        
+        self.updateLayerOrderDisplay()
+        self.layer_tab.layer_order_list.setCurrentRow(current_row - 1)
+        self.canvas.updateCharacterInstance(self.current_instance.instance_id)
     
     def moveLayerToTop(self):
-        """移动图层到顶层"""
+        """移动图层/自定义部件到顶层"""
         if not self.current_instance:
             return
         
         current_row = self.layer_tab.layer_order_list.currentRow()
-        if current_row >= 0:
-            layer_order = self.current_instance.layer_order
-            layer_id = layer_order.pop(current_row)
-            layer_order.append(layer_id)
-            
-            self.updateLayerOrderDisplay()
-            self.layer_tab.layer_order_list.setCurrentRow(len(layer_order) - 1)
-            self.canvas.updateCharacterInstance(self.current_instance.instance_id)
+        if current_row < 0:
+            return
+        
+        all_elements = self.getAllDrawElementsForDisplay()
+        if current_row >= len(all_elements):
+            return
+        
+        current_element = all_elements[current_row]
+        
+        # 获取最大z_order并+1
+        max_z = max([e['z_order'] for e in all_elements], default=0)
+        self.setElementZOrder(current_element, max_z + 1)
+        
+        self.updateLayerOrderDisplay()
+        self.canvas.updateCharacterInstance(self.current_instance.instance_id)
     
     def moveLayerToBottom(self):
-        """移动图层到底层"""
+        """移动图层/自定义部件到底层"""
         if not self.current_instance:
             return
         
         current_row = self.layer_tab.layer_order_list.currentRow()
-        if current_row >= 0:
-            layer_order = self.current_instance.layer_order
-            layer_id = layer_order.pop(current_row)
-            layer_order.insert(0, layer_id)
-            
-            self.updateLayerOrderDisplay()
-            self.layer_tab.layer_order_list.setCurrentRow(0)
-            self.canvas.updateCharacterInstance(self.current_instance.instance_id)
+        if current_row < 0:
+            return
+        
+        all_elements = self.getAllDrawElementsForDisplay()
+        if current_row >= len(all_elements):
+            return
+        
+        current_element = all_elements[current_row]
+        
+        # 获取最小z_order并-1
+        min_z = min([e['z_order'] for e in all_elements], default=0)
+        self.setElementZOrder(current_element, min_z - 1)
+        
+        self.updateLayerOrderDisplay()
+        self.canvas.updateCharacterInstance(self.current_instance.instance_id)
+    
+    def setElementZOrder(self, element, z_order):
+        """设置元素的z_order"""
+        if element['type'] == 'layer':
+            # 对于图层，更新composition_layers中的z_order
+            layer_id = element['id']
+            if layer_id in self.current_instance.composition_layers:
+                self.current_instance.composition_layers[layer_id]['z_order'] = z_order
+                
+        elif element['type'] == 'custom_component':
+            # 对于自定义部件，直接设置z_index
+            component_name = element['name']
+            component = self.current_instance.custom_components.get_component_by_name(component_name)
+            if component:
+                component.z_index = z_order
     
     def duplicateCharacterInstance(self):
         """复制角色实例"""
@@ -1249,8 +1405,249 @@ class ModernCharacterComposer(QMainWindow):
                 QMessageBox.critical(self, "错误", f"高清导出失败: {e}")
                 self.status_bar.showMessage("高清导出失败")
     
+    def exportCharacterOnly(self):
+        """导出仅有立牌的透明背景图片"""
+        if not self.character_instances:
+            QMessageBox.warning(self, "警告", "没有角色可以导出")
+            return
+        
+        # 首先让用户选择导出分辨率
+        resolution_dialog = QMessageBox()
+        resolution_dialog.setWindowTitle("选择导出分辨率")
+        resolution_dialog.setText("请选择立牌导出的分辨率倍数：")
+        
+        # 添加自定义按钮
+        btn_1x = resolution_dialog.addButton("1倍 (原始)", QMessageBox.ButtonRole.ActionRole)
+        btn_2x = resolution_dialog.addButton("2倍 (高清)", QMessageBox.ButtonRole.ActionRole)
+        btn_3x = resolution_dialog.addButton("3倍 (超清)", QMessageBox.ButtonRole.ActionRole)
+        btn_4x = resolution_dialog.addButton("4倍 (4K)", QMessageBox.ButtonRole.ActionRole)
+        btn_cancel = resolution_dialog.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        
+        resolution_dialog.exec()
+        clicked_button = resolution_dialog.clickedButton()
+        
+        if clicked_button == btn_cancel:
+            return
+        elif clicked_button == btn_1x:
+            scale_multiplier = 1.0
+        elif clicked_button == btn_2x:
+            scale_multiplier = 2.0
+        elif clicked_button == btn_3x:
+            scale_multiplier = 3.0
+        elif clicked_button == btn_4x:
+            scale_multiplier = 4.0
+        else:
+            return
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "导出立牌图像", "", "PNG files (*.png)"
+        )
+        
+        if filename:
+            try:
+                # 计算角色边界框以确定画布大小
+                bounds = self.calculateCharacterBounds()
+                min_x, min_y, max_x, max_y = bounds
+                
+                if min_x is None or min_y is None or max_x is None or max_y is None:  # 没有可见角色
+                    QMessageBox.warning(self, "警告", "没有可见的角色内容可以导出")
+                    return
+                
+                # 添加一些边距
+                margin = int(100 * scale_multiplier)
+                canvas_width = int((max_x - min_x) * scale_multiplier) + margin * 2
+                canvas_height = int((max_y - min_y) * scale_multiplier) + margin * 2
+                
+                # 显示导出进度
+                self.status_bar.showMessage(f"正在导出 {canvas_width}×{canvas_height} 立牌图像...")
+                QApplication.processEvents()  # 更新UI
+                
+                # 创建透明画布
+                export_pixmap = QPixmap(canvas_width, canvas_height)
+                export_pixmap.fill(Qt.GlobalColor.transparent)
+                
+                painter = QPainter(export_pixmap)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+                
+                # 计算偏移量以确保角色内容在画布中心
+                offset_x = margin - int(min_x * scale_multiplier)
+                offset_y = margin - int(min_y * scale_multiplier)
+                
+                # 只渲染角色，不渲染背景
+                self.renderCharactersForCharacterOnlyExport(painter, canvas_width, canvas_height, scale_multiplier, offset_x, offset_y)
+                
+                painter.end()
+                
+                # 保存文件（PNG以保持透明度）
+                success = export_pixmap.save(filename, "PNG", 100)  # 100%质量
+                
+                if success:
+                    file_size = os.path.getsize(filename) / (1024 * 1024)  # MB
+                    QMessageBox.information(self, "立牌导出成功", 
+                        f"立牌图像已导出到:\n{filename}\n"
+                        f"分辨率: {canvas_width}×{canvas_height} ({scale_multiplier}倍)\n"
+                        f"文件大小: {file_size:.2f} MB\n"
+                        f"格式: PNG (透明背景)")
+                else:
+                    QMessageBox.warning(self, "警告", "保存文件失败")
+                
+                self.status_bar.showMessage("立牌导出完成")
+                
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"立牌导出失败: {e}")
+                self.status_bar.showMessage("立牌导出失败")
+    
+    def calculateCharacterBounds(self):
+        """计算所有可见角色的边界框"""
+        min_x = min_y = float('inf')
+        max_x = max_y = float('-inf')
+        
+        has_visible_characters = False
+        
+        for instance in self.character_instances.values():
+            if not instance.visible:
+                continue
+                
+            # 获取角色的所有绘制元素
+            elements = self.canvas.getAllDrawElements(instance)
+            
+            for element in elements:
+                if element['type'] == 'layer':
+                    layer = element['layer']
+                    image = element['image']
+                    
+                    # 计算图层位置
+                    layer_x, layer_y = layer['position']
+                    final_x = layer_x * instance.scale + instance.x_offset
+                    final_y = layer_y * instance.scale + instance.y_offset
+                    
+                    # 计算图像尺寸
+                    img_width = image.width * instance.scale
+                    img_height = image.height * instance.scale
+                    
+                    # 更新边界框
+                    min_x = min(min_x, final_x)
+                    min_y = min(min_y, final_y)
+                    max_x = max(max_x, final_x + img_width)
+                    max_y = max(max_y, final_y + img_height)
+                    
+                    has_visible_characters = True
+                    
+                elif element['type'] == 'custom_component':
+                    component = element['component']
+                    
+                    # 计算自定义部件位置
+                    comp_x, comp_y = component.x, component.y
+                    final_x = (comp_x * instance.scale + instance.x_offset)
+                    final_y = (comp_y * instance.scale + instance.y_offset)
+                    
+                    # 计算图像尺寸
+                    img_width = component.image.width * instance.scale * component.scale
+                    img_height = component.image.height * instance.scale * component.scale
+                    
+                    # 更新边界框
+                    min_x = min(min_x, final_x)
+                    min_y = min(min_y, final_y)
+                    max_x = max(max_x, final_x + img_width)
+                    max_y = max(max_y, final_y + img_height)
+                    
+                    has_visible_characters = True
+        
+        if not has_visible_characters:
+            return None, None, None, None
+            
+        return min_x, min_y, max_x, max_y
+    
+    def renderCharactersForCharacterOnlyExport(self, painter: QPainter, canvas_width: int, canvas_height: int, scale_multiplier: float = 1.0, offset_x: int = 0, offset_y: int = 0):
+        """专用于仅角色导出的渲染方法 - 带偏移量支持"""
+        # 按照正确的图层顺序渲染所有角色
+        all_render_items = []
+        
+        # 按z_order从小到大排序角色（小的在后面，大的在前面）
+        sorted_instances = sorted(self.character_instances.values(), key=lambda x: x.z_order)
+        
+        # 收集所有要渲染的元素（图层+自定义部件），按角色层级和图层顺序排序
+        for instance in sorted_instances:
+            if not instance.visible:
+                continue
+            
+            # 使用统一的元素获取方法（与Canvas渲染一致）
+            elements = self.canvas.getAllDrawElements(instance)
+            
+            for element in elements:
+                if element['type'] == 'layer':
+                    # 处理普通图层
+                    layer = element['layer']
+                    image = element['image']
+                    
+                    # 计算最终位置（考虑角色变换、偏移量和分辨率倍数）
+                    layer_x, layer_y = layer['position']
+                    
+                    # 应用角色变换和分辨率倍数
+                    final_x = (layer_x * instance.scale + instance.x_offset) * scale_multiplier
+                    final_y = (layer_y * instance.scale + instance.y_offset) * scale_multiplier
+                    
+                    # 应用偏移量
+                    final_x += offset_x
+                    final_y += offset_y
+                    
+                    # 计算最终缩放比例（实例缩放 × 分辨率倍数）
+                    final_scale = instance.scale * scale_multiplier
+                    
+                    all_render_items.append({
+                        'type': 'layer',
+                        'image': image,
+                        'x': final_x,
+                        'y': final_y,
+                        'scale': final_scale,
+                        'element_id': element['id'],
+                        'instance_id': instance.instance_id,
+                        'z_order': element['z_order']
+                    })
+                    
+                elif element['type'] == 'custom_component':
+                    # 处理自定义部件
+                    component = element['component']
+                    
+                    # 计算最终位置（考虑角色变换、自定义部件位置、偏移量和分辨率倍数）
+                    comp_x, comp_y = component.x, component.y
+                    
+                    # 应用角色变换和分辨率倍数
+                    final_x = (comp_x * instance.scale + instance.x_offset) * scale_multiplier
+                    final_y = (comp_y * instance.scale + instance.y_offset) * scale_multiplier
+                    
+                    # 应用偏移量
+                    final_x += offset_x
+                    final_y += offset_y
+                    
+                    # 计算最终缩放比例（角色缩放 × 部件缩放 × 分辨率倍数）
+                    final_scale = instance.scale * component.scale * scale_multiplier
+                    
+                    all_render_items.append({
+                        'type': 'custom_component',
+                        'image': component.image,
+                        'x': final_x,
+                        'y': final_y,
+                        'scale': final_scale,
+                        'element_id': element['id'],
+                        'instance_id': instance.instance_id,
+                        'z_order': element['z_order']
+                    })
+        
+        # 按z_order排序所有元素（确保正确的渲染顺序）
+        all_render_items.sort(key=lambda x: x['z_order'])
+        
+        # 渲染所有元素
+        for item in all_render_items:
+            # 转换PIL图像为高分辨率QPixmap
+            pixmap = pil_to_qpixmap_high_quality(item['image'], item['scale'])
+            if pixmap:
+                painter.drawPixmap(int(item['x']), int(item['y']), pixmap)
+    
     def renderCharactersForExport(self, painter: QPainter, canvas_width: int, canvas_height: int, scale_multiplier: float = 1.0):
-        """专用于导出的角色渲染方法 - 支持高分辨率"""
+        """专用于导出的角色渲染方法 - 支持高分辨率和统一图层系统"""
         # 计算画布中心（考虑分辨率倍数）
         center_x = canvas_width // 2
         center_y = canvas_height // 2
@@ -1261,15 +1658,19 @@ class ModernCharacterComposer(QMainWindow):
         # 按z_order从小到大排序角色（小的在后面，大的在前面）
         sorted_instances = sorted(self.character_instances.values(), key=lambda x: x.z_order)
         
-        # 收集所有要渲染的图层，按角色层级和图层顺序排序
+        # 收集所有要渲染的元素（图层+自定义部件），按角色层级和图层顺序排序
         for instance in sorted_instances:
             if not instance.visible:
                 continue
-                
-            for layer_id in instance.layer_order:
-                if layer_id in instance.composition_layers and layer_id in instance.layer_images:
-                    layer = instance.composition_layers[layer_id]
-                    image = instance.layer_images[layer_id]
+            
+            # 使用统一的元素获取方法（与Canvas渲染一致）
+            elements = self.canvas.getAllDrawElements(instance)
+            
+            for element in elements:
+                if element['type'] == 'layer':
+                    # 处理普通图层
+                    layer = element['layer']
+                    image = element['image']
                     
                     # 计算最终位置（考虑角色变换、居中和分辨率倍数）
                     layer_x, layer_y = layer['position']
@@ -1286,15 +1687,49 @@ class ModernCharacterComposer(QMainWindow):
                     final_scale = instance.scale * scale_multiplier
                     
                     all_render_items.append({
+                        'type': 'layer',
                         'image': image,
                         'x': final_x,
                         'y': final_y,
                         'scale': final_scale,
-                        'layer_id': layer_id,
-                        'instance_id': instance.instance_id
+                        'element_id': element['id'],
+                        'instance_id': instance.instance_id,
+                        'z_order': element['z_order']
+                    })
+                    
+                elif element['type'] == 'custom_component':
+                    # 处理自定义部件
+                    component = element['component']
+                    
+                    # 计算最终位置（考虑角色变换、自定义部件位置、居中和分辨率倍数）
+                    comp_x, comp_y = component.x, component.y
+                    
+                    # 应用角色变换和分辨率倍数
+                    final_x = (comp_x * instance.scale + instance.x_offset) * scale_multiplier
+                    final_y = (comp_y * instance.scale + instance.y_offset) * scale_multiplier
+                    
+                    # 应用画布居中偏移
+                    final_x += center_x
+                    final_y += center_y
+                    
+                    # 计算最终缩放比例（角色缩放 × 部件缩放 × 分辨率倍数）
+                    final_scale = instance.scale * component.scale * scale_multiplier
+                    
+                    all_render_items.append({
+                        'type': 'custom_component',
+                        'image': component.image,
+                        'x': final_x,
+                        'y': final_y,
+                        'scale': final_scale,
+                        'element_id': element['id'],
+                        'instance_id': instance.instance_id,
+                        'z_order': element['z_order']
                     })
         
-        # 渲染所有图层
+        # 按z_order排序所有元素（确保正确的渲染顺序）
+        all_render_items.sort(key=lambda x: x['z_order'])
+        
+        # 渲染所有元素
         for item in all_render_items:
             # 转换PIL图像为高分辨率QPixmap
             pixmap = pil_to_qpixmap_high_quality(item['image'], item['scale'])
@@ -1315,17 +1750,8 @@ class ModernCharacterComposer(QMainWindow):
                 }
                 
                 for instance in self.character_instances.values():
-                    char_data = {
-                        'character_name': instance.character_name,
-                        'size': instance.size,
-                        'x_offset': instance.x_offset,
-                        'y_offset': instance.y_offset,
-                        'scale': instance.scale,
-                        'visible': instance.visible,
-                        'z_order': instance.z_order,
-                        'layers': list(instance.composition_layers.keys()),
-                        'layer_order': instance.layer_order
-                    }
+                    # 使用CharacterInstance的to_dict方法，保存完整信息
+                    char_data = instance.to_dict()
                     scene_data['characters'].append(char_data)
                 
                 with open(filename, 'w', encoding='utf-8') as f:
@@ -1360,34 +1786,54 @@ class ModernCharacterComposer(QMainWindow):
                 loaded_count = 0
                 for char_data in scene_data.get('characters', []):
                     instance = CharacterInstance(char_data['character_name'], char_data['size'])
-                    instance.x_offset = char_data.get('x_offset', 0.0)
-                    instance.y_offset = char_data.get('y_offset', 0.0)
-                    instance.scale = char_data.get('scale', 1.0)
-                    instance.visible = char_data.get('visible', True)
-                    instance.z_order = char_data.get('z_order', loaded_count)
                     
-                    # 重建图层信息
-                    if char_data['character_name'] in self.character_data:
-                        char_info = self.character_data[char_data['character_name']]
-                        size_data = char_info['layer_mapping'].get(char_data['size'], {})
-                        
-                        # 收集所有分组中的图层
-                        all_layers = []
-                        for group_name, group_layers in size_data.items():
-                            all_layers.extend(group_layers)
-                        
-                        for layer_id in char_data.get('layers', []):
-                            for layer in all_layers:
-                                if layer['layer_id'] == layer_id:
-                                    instance.composition_layers[layer_id] = layer
-                                    
-                                    # 加载对应的图像文件
+                    # 使用from_dict方法加载完整信息
+                    instance.from_dict(char_data)
+                    
+                    # 如果有保存的图层信息，使用它；否则从原始数据重建
+                    if 'composition_layers' in char_data:
+                        # 使用保存的图层信息（保持用户调整）
+                        instance.composition_layers = char_data['composition_layers']
+                        # 为保存的图层加载图像
+                        for layer_id, layer_info in instance.composition_layers.items():
+                            # 处理可能的字符串键
+                            try:
+                                id_as_int = int(layer_id) if isinstance(layer_id, str) else layer_id
+                                if id_as_int >= 0:
+                                    # 原始图层：从PNG文件加载
                                     png_file = f"cr_data_png/{char_data['character_name']}_{char_data['size']}_{layer_id}.png"
                                     if os.path.exists(png_file):
                                         self.image_loader.addTask(layer_id, png_file)
-                                    break
-                        
-                        instance.layer_order = char_data.get('layer_order', list(instance.composition_layers.keys()))
+                                else:
+                                    # 自定义图层：从文件路径加载
+                                    if layer_info.get('custom') and layer_info.get('file_path'):
+                                        file_path = layer_info['file_path']
+                                        if os.path.exists(file_path):
+                                            self.image_loader.addTask(layer_id, file_path)
+                            except (ValueError, TypeError):
+                                # 如果键转换失败，跳过这个图层
+                                continue
+                    else:
+                        # 向后兼容：从原始数据重建图层信息
+                        if char_data['character_name'] in self.character_data:
+                            char_info = self.character_data[char_data['character_name']]
+                            size_data = char_info['layer_mapping'].get(char_data['size'], {})
+                            
+                            # 收集所有分组中的图层
+                            all_layers = []
+                            for group_name, group_layers in size_data.items():
+                                all_layers.extend(group_layers)
+                            
+                            for layer_id in char_data.get('layers', []):
+                                for layer in all_layers:
+                                    if layer['layer_id'] == layer_id:
+                                        instance.composition_layers[layer_id] = layer
+                                        
+                                        # 加载对应的图像文件
+                                        png_file = f"cr_data_png/{char_data['character_name']}_{char_data['size']}_{layer_id}.png"
+                                        if os.path.exists(png_file):
+                                            self.image_loader.addTask(layer_id, png_file)
+                                        break
                     
                     self.character_instances[instance.instance_id] = instance
                     self.canvas.addCharacterInstance(instance.instance_id, instance)
@@ -1411,3 +1857,299 @@ class ModernCharacterComposer(QMainWindow):
                 
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"加载场景失败: {e}")
+    
+    # ============ 自定义部件相关方法 ============
+    
+    def onAddCustomComponent(self, image_path: str):
+        """添加自定义部件"""
+        if not self.current_instance:
+            QMessageBox.warning(self, "警告", "请先选择一个角色实例")
+            return
+        
+        try:
+            # 从文件路径提取名称
+            import os
+            filename = os.path.basename(image_path)
+            component_name = os.path.splitext(filename)[0]
+            
+            # 确保名称唯一
+            existing_names = [comp.name for comp in self.current_instance.custom_components.components]
+            counter = 1
+            original_name = component_name
+            while component_name in existing_names:
+                component_name = f"{original_name}_{counter}"
+                counter += 1
+            
+            # 添加到当前角色实例
+            component = self.current_instance.custom_components.add_component(component_name, image_path)
+            
+            # 更新UI列表
+            self.character_tab.addCustomComponentToList(component_name)
+            
+            # 更新画布
+            self.canvas.updateCharacterInstance(self.current_instance.instance_id)
+            
+            # 选中新添加的部件
+            self.character_tab.component_list.setCurrentRow(self.character_tab.component_list.count() - 1)
+            
+            QMessageBox.information(self, "成功", f"已添加自定义部件: {component_name}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"添加自定义部件失败: {e}")
+    
+    def onRemoveCustomComponent(self, component_name: str):
+        """移除自定义部件"""
+        if not self.current_instance:
+            return
+        
+        try:
+            # 从角色实例中移除
+            self.current_instance.custom_components.remove_component_by_name(component_name)
+            
+            # 从UI列表中移除
+            self.character_tab.removeCustomComponentFromList(component_name)
+            
+            # 更新画布
+            self.canvas.updateCharacterInstance(self.current_instance.instance_id)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"移除自定义部件失败: {e}")
+    
+    def onCustomComponentSelected(self, component_name: str):
+        """自定义部件选择事件"""
+        if not self.current_instance:
+            return
+        
+        try:
+            component = self.current_instance.custom_components.get_component_by_name(component_name)
+            if component:
+                # 更新变换控件
+                self.character_tab.updateCustomComponentTransform(component.x, component.y, component.scale)
+                
+        except Exception as e:
+            print(f"选择自定义部件失败: {e}")
+    
+    def onCustomComponentTransformChanged(self, component_name: str, x: int, y: int, scale: float):
+        """自定义部件变换改变"""
+        if not self.current_instance:
+            return
+        
+        try:
+            component = self.current_instance.custom_components.get_component_by_name(component_name)
+            if component:
+                component.x = x
+                component.y = y
+                component.scale = scale
+                
+                # 更新画布
+                self.canvas.updateCharacterInstance(self.current_instance.instance_id)
+                
+        except Exception as e:
+            print(f"更新自定义部件变换失败: {e}")
+    
+    def onMoveCustomComponent(self, component_name: str, direction: str):
+        """移动自定义部件层级"""
+        if not self.current_instance:
+            return
+        
+        try:
+            component = self.current_instance.custom_components.get_component_by_name(component_name)
+            if component:
+                if direction == 'up':
+                    self.current_instance.custom_components.move_component_up(component)
+                elif direction == 'down':
+                    self.current_instance.custom_components.move_component_down(component)
+                elif direction == 'front':
+                    self.current_instance.custom_components.move_component_to_front(component)
+                elif direction == 'back':
+                    self.current_instance.custom_components.move_component_to_back(component)
+                
+                # 更新画布
+                self.canvas.updateCharacterInstance(self.current_instance.instance_id)
+                
+        except Exception as e:
+            print(f"移动自定义部件层级失败: {e}")
+    
+    def updateCustomComponentsList(self):
+        """更新自定义部件列表"""
+        if not self.current_instance:
+            return
+        
+        # 清空列表
+        self.character_tab.component_list.clear()
+        
+        # 添加所有自定义部件
+        for component in self.current_instance.custom_components.components:
+            self.character_tab.addCustomComponentToList(component.name)
+    
+    def showHelp(self):
+        """显示使用指南"""
+        help_dialog = QDialog(self)
+        help_dialog.setWindowTitle("GINKA 立绘搭配 - 使用指南")
+        help_dialog.setFixedSize(800, 600)
+        
+        layout = QVBoxLayout(help_dialog)
+        
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        
+        # 帮助文本
+        help_text = QTextEdit()
+        help_text.setReadOnly(True)
+        help_content = """
+<h2>GINKA 立绘搭配软件 使用指南</h2>
+
+<h3>📝 软件简介</h3>
+<p>GINKA 立绘搭配软件是一款专为 GINKA 立绘设计的搭配工具，支持多角色、多图层的复合展示。</p>
+
+<h3>🎬 场景操作</h3>
+<ul>
+    <li><b>背景设置：</b>从下拉菜单选择预设背景，或点击"浏览"加载自定义背景</li>
+    <li><b>导出功能：</b>支持导出合成图像、高清图像或仅角色图像</li>
+    <li><b>场景保存：</b>可保存当前场景设置，包括所有角色和图层配置</li>
+    <li><b>场景加载：</b>读取之前保存的场景文件</li>
+</ul>
+
+<h3>👥 角色管理</h3>
+<ul>
+    <li><b>添加角色：</b>从角色列表中选择并添加到画布</li>
+    <li><b>角色变换：</b>调整位置、缩放和旋转</li>
+    <li><b>层级管理：</b>前移、后移、置顶、置底</li>
+    <li><b>复制角色：</b>快速复制当前选中的角色实例</li>
+    <li><b>自定义部件：</b>导入外部图片作为自定义装饰</li>
+</ul>
+
+<h3>🎨 图层控制</h3>
+<ul>
+    <li><b>图层切换：</b>点击复选框显示/隐藏特定图层</li>
+    <li><b>图层排序：</b>上移、下移、置顶、置底调整显示顺序</li>
+    <li><b>分类显示：</b>按类别组织显示图层（表情、服装、配饰等）</li>
+</ul>
+
+<h3>🖼️ 画布操作</h3>
+<ul>
+    <li><b>拖拽画布模式：</b>移动和缩放整个视图</li>
+    <li><b>移动角色模式：</b>直接在画布上拖拽角色位置</li>
+    <li><b>适应画布：</b>自动调整视图以显示所有内容</li>
+    <li><b>重置视图：</b>恢复到默认缩放和位置</li>
+</ul>
+
+
+<h3>💡 使用技巧</h3>
+<ul>
+    <li>可以同时添加多个角色实例进行对比</li>
+    <li>使用图层预览功能快速查看不同搭配效果</li>
+    <li>善用场景保存功能保存喜欢的搭配</li>
+    <li>导出高清图像获得更好的显示效果</li>
+</ul>
+
+<h3>❓ 常见问题</h3>
+<ul>
+    <li><b>图层不显示：</b>检查图层是否被勾选显示</li>
+    <li><b>角色太小/太大：</b>调整缩放参数或使用适应画布功能</li>
+    <li><b>导出图片模糊：</b>使用"导出高清图像"功能</li>
+</ul>
+"""
+        help_text.setHtml(help_content)
+        scroll_layout.addWidget(help_text)
+        
+        scroll_area.setWidget(scroll_widget)
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+        
+        # 确定按钮
+        ok_button = QPushButton("确定")
+        ok_button.clicked.connect(help_dialog.accept)
+        layout.addWidget(ok_button)
+        
+        help_dialog.exec()
+    
+    def showAbout(self):
+        """显示关于对话框"""
+        about_dialog = QDialog(self)
+        about_dialog.setWindowTitle("关于 GINKA 立绘搭配")
+        about_dialog.setFixedSize(800, 600)
+        
+        layout = QVBoxLayout(about_dialog)
+        
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        
+        # 关于文本
+        about_text = QTextEdit()
+        about_text.setReadOnly(True)
+        about_content = """
+<h2>GINKA 立绘搭配软件</h2>
+<p><b>版本：</b>1.0.0</p>
+<p><b>开发者：</b>DecEric</p>
+<p><b>学校：</b>Beijing Institute of Technology (BIT)</p>
+<p><b>专业：</b>Computer Science</p>
+
+<h3>📧 联系方式</h3>
+<ul>
+    <li><b>QQ邮箱：</b>1277630739@qq.com</li>
+    <li><b>GitHub：</b>https://github.com/Decent898</li>
+</ul>
+
+<h3>🛠️ 技术栈</h3>
+<ul>
+    <li><b>Python 3.12+</b> - 核心编程语言</li>
+    <li><b>PyQt6</b> - 现代化GUI框架</li>
+    <li><b>PIL/Pillow</b> - 图像处理库</li>
+    <li><b>NumPy</b> - 数值计算支持</li>
+    <li><b>PyInstaller</b> - 程序打包工具</li>
+</ul>
+
+
+<h3>✨ 主要特性</h3>
+<ul>
+    <li><b>多角色支持：</b>同时添加多个角色进行对比展示</li>
+    <li><b>图层管理：</b>精细化的图层控制和排序功能</li>
+    <li><b>高清导出：</b>支持多种分辨率的图像导出</li>
+    <li><b>场景保存：</b>保存和加载完整的搭配场景</li>
+    <li><b>自定义部件：</b>导入外部图片进行自由搭配</li>
+    <li><b>实时预览：</b>所见即所得的预览效果</li>
+</ul>
+
+<h3>�📝 版权声明</h3>
+<p><b>软件版权：</b>本软件采用开源许可证，仅供学习和个人使用。</p>
+<p><b>立绘版权：</b>所有角色立绘和游戏素材版权归原游戏厂商所有。</p>
+
+<h3>🔧 技术支持</h3>
+<p>如遇到问题或有改进建议，欢迎通过以下方式联系：</p>
+<ul>
+    <li>GitHub Issues: 在项目页面提交问题报告</li>
+    <li>邮件联系: 1277630739@qq.com</li>
+    <li>功能建议: 欢迎提出新功能的想法和建议</li>
+</ul>
+
+<p style="text-align: center; margin-top: 20px; font-style: italic; color: #666;">
+<b>感谢您使用 GINKA 立绘搭配软件！</b><br>
+让我们一起创造更美好的二次元世界 ✨
+</p>
+"""
+        about_text.setHtml(about_content)
+        scroll_layout.addWidget(about_text)
+        
+        scroll_area.setWidget(scroll_widget)
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+        
+        # 确定按钮
+        ok_button = QPushButton("确定")
+        ok_button.clicked.connect(about_dialog.accept)
+        layout.addWidget(ok_button)
+        
+        about_dialog.exec()
+    
+    def showWelcomeDialogs(self):
+        """显示欢迎对话框（关于和帮助）"""
+        # 首先显示关于对话框
+        self.showAbout()
+        
+        # 然后显示帮助对话框
+        self.showHelp()
